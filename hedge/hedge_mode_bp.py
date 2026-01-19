@@ -987,44 +987,49 @@ class HedgeBot:
         except Exception as e:
             self.logger.error(f"Could not setup Backpack depth WebSocket: {e}")
 
-    def get_lighter_position(self):
-        url = "https://mainnet.zklighter.elliot.ai/api/v1/account"
-        headers = {"accept": "application/json"}
+    async def get_lighter_position(self):
+        def _fetch_position():
+            url = "https://mainnet.zklighter.elliot.ai/api/v1/account"
+            headers = {"accept": "application/json"}
+            parameters = {"by": "index", "value": self.account_index}
+            
+            try:
+                response = requests.get(url, headers=headers, params=parameters, timeout=10)
+                response.raise_for_status()
 
-        current_position = None
-        parameters = {"by": "index", "value": self.account_index}
-        try:
-            response = requests.get(url, headers=headers, params=parameters, timeout=10)
-            response.raise_for_status()  # Raise an exception for bad status codes
+                if not response.text.strip():
+                    self.logger.warning("⚠️ Empty response from Lighter API for position check")
+                    return self.lighter_position
 
-            # Check if response has content
-            if not response.text.strip():
-                print("⚠️ Empty response from Lighter API for position check")
-                return self.lighter_position
+                data = response.json()
 
-            data = response.json()
+                if 'accounts' not in data or not data['accounts']:
+                    self.logger.warning(f"⚠️ Unexpected response format from Lighter API: {data}")
+                    return self.lighter_position
 
-            if 'accounts' not in data or not data['accounts']:
-                print(f"⚠️ Unexpected response format from Lighter API: {data}")
-                return self.lighter_position
+                positions = data['accounts'][0].get('positions', [])
+                current_position = None
+                for position in positions:
+                    if position.get('symbol') == self.ticker:
+                        current_position = Decimal(position['position']) * position['sign']
+                        break
+                
+                if current_position is None:
+                    current_position = Decimal('0')
+                
+                return current_position
 
-            positions = data['accounts'][0].get('positions', [])
-            for position in positions:
-                if position.get('symbol') == self.ticker:
-                    current_position = Decimal(position['position']) * position['sign']
-                    break
-            if current_position is None:
-                current_position = 0
+            except requests.exceptions.RequestException as e:
+                self.logger.error(f"⚠️ Network error getting position: {e}")
+            except json.JSONDecodeError as e:
+                self.logger.error(f"⚠️ JSON parsing error in position response: {e}")
+                self.logger.debug(f"Response text: {response.text[:200]}...")
+            except Exception as e:
+                self.logger.error(f"⚠️ Unexpected error getting position: {e}")
+            
+            return self.lighter_position
 
-        except requests.exceptions.RequestException as e:
-            print(f"⚠️ Network error getting position: {e}")
-        except json.JSONDecodeError as e:
-            print(f"⚠️ JSON parsing error in position response: {e}")
-            print(f"Response text: {response.text[:200]}...")  # Show first 200 chars
-        except Exception as e:
-            print(f"⚠️ Unexpected error getting position: {e}")
-
-        return current_position
+        return await asyncio.to_thread(_fetch_position)
 
     async def trading_loop(self):
         """Main trading loop implementing the new strategy."""
@@ -1097,7 +1102,7 @@ class HedgeBot:
         await asyncio.sleep(5)
 
         iterations = 0
-        self.lighter_position = self.get_lighter_position()
+        self.lighter_position = await self.get_lighter_position()
         self.backpack_position = await self.get_backpack_position()
         while iterations < self.iterations and not self.stop_flag:
             iterations += 1
@@ -1106,7 +1111,7 @@ class HedgeBot:
             self.logger.info("-----------------------------------------------")
 
             while self.backpack_position < self.max_position and not self.stop_flag:
-                self.lighter_position = self.get_lighter_position()
+                self.lighter_position = await self.get_lighter_position()
                 self.backpack_position = await self.get_backpack_position()
                 self.logger.info(f"Buying up to {self.max_position} | Backpack position: {self.backpack_position} | Lighter position: {self.lighter_position}")
                 if abs(self.backpack_position + self.lighter_position) > self.order_quantity*2:
@@ -1162,7 +1167,7 @@ class HedgeBot:
 
             exit_after_next_trade = False
             while self.backpack_position > 0.00000001 and not self.stop_flag:
-                self.lighter_position = self.get_lighter_position()
+                self.lighter_position = await self.get_lighter_position()
                 self.backpack_position = await self.get_backpack_position()
                 self.logger.info(f"Closing to 0 | Backpack position: {self.backpack_position} | Lighter position: {self.lighter_position}")
                 if abs(self.backpack_position + self.lighter_position) > self.order_quantity*2:
