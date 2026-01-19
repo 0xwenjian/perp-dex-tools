@@ -525,55 +525,54 @@ class BackpackClient(BaseExchangeClient):
         )
 
     @query_retry(default_return=[])
-    async def get_active_orders(self, contract_id: str) -> List[OrderInfo]:
-        """Get active orders for a contract using official SDK."""
-        # Get active orders using Backpack SDK
-        active_orders = self.account_client.get_open_orders(symbol=contract_id)
-
-        if not active_orders:
-            return []
-
-        # Return the orders list as OrderInfo objects
-        order_list = active_orders if isinstance(active_orders, list) else active_orders.get('orders', [])
+    def get_active_orders_sync(self, contract_id: str) -> List[OrderInfo]:
+        """Get active orders for a contract using official SDK (sync)."""
+        orders_data = self.account_client.get_open_orders(symbol=contract_id)
         orders = []
-
-        for order in order_list:
-            if isinstance(order, dict):
-                if order.get('side', '') == 'Bid':
-                    side = 'buy'
-                elif order.get('side', '') == 'Ask':
-                    side = 'sell'
+        for order in orders_data:
+            if order.get('symbol', '') == contract_id:
                 orders.append(OrderInfo(
-                    order_id=order.get('id', ''),
-                    side=side,
-                    size=Decimal(order.get('quantity', 0)),
+                    order_id=order.get('orderId', ''),
+                    side=order.get('side', '').lower(),
                     price=Decimal(order.get('price', 0)),
                     status=order.get('status', ''),
+                    size=Decimal(order.get('quantity', 0)),
                     filled_size=Decimal(order.get('executedQuantity', 0)),
                     remaining_size=Decimal(order.get('quantity', 0)) - Decimal(order.get('executedQuantity', 0))
                 ))
-
         return orders
+
+    @query_retry(default_return=[])
+    async def get_active_orders(self, contract_id: str) -> List[OrderInfo]:
+        """Get active orders for a contract using official SDK."""
+        return self.get_active_orders_sync(contract_id)
+
+    def get_account_positions_sync(self) -> Decimal:
+        """Get account positions using official SDK (sync)."""
+        positions_data = self.account_client.get_open_positions()
+        position_amt = Decimal(0)
+        for position in positions_data:
+            if position.get('symbol', '') == self.config.contract_id:
+                qty = Decimal(position.get('netQuantity', 0))
+                side = position.get('side', 'Long')
+                position_amt = qty if side == 'Long' else -qty
+                break
+        return position_amt
 
     @query_retry(default_return=0)
     async def get_account_positions(self) -> Decimal:
         """Get account positions using official SDK."""
-        positions_data = self.account_client.get_open_positions()
-        position_amt = 0
-        for position in positions_data:
-            if position.get('symbol', '') == self.config.contract_id:
-                position_amt = Decimal(position.get('netQuantity', 0))
-                break
-        return position_amt
+        return self.get_account_positions_sync()
 
-    async def get_contract_attributes(self) -> Tuple[str, Decimal]:
-        """Get contract ID for a ticker."""
+    def get_contract_attributes_sync(self) -> Tuple[str, Decimal]:
+        """Get contract ID for a ticker (sync)."""
         ticker = self.config.ticker
         if len(ticker) == 0:
             self.logger.log("Ticker is empty", "ERROR")
             raise ValueError("Ticker is empty")
 
         markets = self.public_client.get_markets()
+        min_quantity = Decimal(0)
         for market in markets:
             if (market.get('marketType', '') == 'PERP' and market.get('baseSymbol', '') == ticker and
                     market.get('quoteSymbol', '') == 'USDC'):
@@ -586,12 +585,12 @@ class BackpackClient(BaseExchangeClient):
             self.logger.log("Failed to get contract ID for ticker", "ERROR")
             raise ValueError("Failed to get contract ID for ticker")
 
-        if self.config.quantity < min_quantity:
-            self.logger.log(f"Order quantity is less than min quantity: {self.config.quantity} < {min_quantity}", "ERROR")
-            raise ValueError(f"Order quantity is less than min quantity: {self.config.quantity} < {min_quantity}")
-
         if self.config.tick_size == 0:
             self.logger.log("Failed to get tick size for ticker", "ERROR")
             raise ValueError("Failed to get tick size for ticker")
 
         return self.config.contract_id, self.config.tick_size
+
+    async def get_contract_attributes(self) -> Tuple[str, Decimal]:
+        """Get contract ID for a ticker."""
+        return self.get_contract_attributes_sync()

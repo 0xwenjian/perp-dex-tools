@@ -360,7 +360,7 @@ class HedgeBot:
 
                     # Get auth token for the subscription
                     try:
-                        auth_token, err = self.lighter_client.create_auth_token_with_expiry(api_key_index=self.api_key_index)
+                        auth_token, err = self.lighter_client.create_auth_token_with_expiry()
                         if err is not None:
                             self.logger.warning(f"⚠️ Failed to create auth token for account orders subscription: {err}")
                         else:
@@ -510,8 +510,9 @@ class HedgeBot:
 
             self.lighter_client = SignerClient(
                 url=self.lighter_base_url,
-                account_index=self.account_index,
-                api_private_keys={self.api_key_index: api_key_private_key}
+                private_key=api_key_private_key,
+                api_key_index=self.api_key_index,
+                account_index=self.account_index
             )
 
             # Check client
@@ -1115,12 +1116,25 @@ class HedgeBot:
                 self.order_execution_complete = False
                 self.waiting_for_lighter_fill = False
                 try:
-                    # Determine side based on some logic (for now, alternate)
+                    # Calculate dynamic quantity based on distance to max_position
+                    remaining_gap = self.max_position - self.backpack_position
+                    quantity_to_place = min(self.order_quantity, remaining_gap)
+                    
+                    if quantity_to_place <= 0:
+                        self.logger.info("✅ Target buying position already reached")
+                        break
+                        
                     side = 'buy'
-                    await self.place_backpack_post_only_order(side, self.order_quantity)
+                    self.logger.info(f"⚡ [OPEN] Placing buy order for {quantity_to_place} (gap: {remaining_gap})")
+                    await self.place_backpack_post_only_order(side, quantity_to_place)
+                except requests.exceptions.RequestException as e:
+                    self.logger.error(f"⚠️ Network error (Retrying): {e}")
+                    await asyncio.sleep(1)
+                    continue  # Retry in next sub-loop iteration
                 except Exception as e:
                     self.logger.error(f"⚠️ Error in trading loop: {e}")
                     self.logger.error(f"⚠️ Full traceback: {traceback.format_exc()}")
+                    # For other errors, we might want to exit to be safe
                     sys.exit(1)
 
                 start_time = time.time()
@@ -1142,39 +1156,48 @@ class HedgeBot:
                 if self.stop_flag:
                     break
 
-            if self.sleep_time > 0:
-                self.logger.info(f"💤 Sleeping {self.sleep_time} seconds ...")
+            if self.sleep_time > 0 and not self.stop_flag:
+                self.logger.info(f"💤 Sleeping {self.sleep_time} seconds after reaching long target...")
                 await asyncio.sleep(self.sleep_time)
 
             exit_after_next_trade = False
-            while self.backpack_position > -1*self.max_position and not self.stop_flag:
+            while self.backpack_position > 0.00000001 and not self.stop_flag:
                 self.lighter_position = self.get_lighter_position()
                 self.backpack_position = await self.get_backpack_position()
-                self.logger.info(f"Selling up to -{self.max_position} | Backpack position: {self.backpack_position} | Lighter position: {self.lighter_position}")
+                self.logger.info(f"Closing to 0 | Backpack position: {self.backpack_position} | Lighter position: {self.lighter_position}")
                 if abs(self.backpack_position + self.lighter_position) > self.order_quantity*2:
                     self.logger.error(f"❌ Position diff is too large: {self.backpack_position + self.lighter_position}")
                     sys.exit(1)
 
                 if iterations == self.iterations:
-                    if self.backpack_position>0 and self.backpack_position <= self.order_quantity:
-                        exit_after_next_trade = True
+                     # If it's the last iteration, we are closing anyway.
+                     pass
 
                 self.order_execution_complete = False
                 self.waiting_for_lighter_fill = False
                 try:
-                    # Determine side based on some logic (for now, alternate)
+                    # Calculate dynamic quantity based on distance to 0
+                    remaining_gap = self.backpack_position
+                    quantity_to_place = min(self.order_quantity, remaining_gap)
+                    
+                    if quantity_to_place <= 0:
+                        self.logger.info("✅ Position already zeroed")
+                        break
+
                     side = 'sell'
-                    if exit_after_next_trade:
-                        await self.place_backpack_post_only_order(side, abs(self.backpack_position))
-                    else:
-                        await self.place_backpack_post_only_order(side, self.order_quantity)
+                    self.logger.info(f"⚡ [CLOSE] Placing sell order for {quantity_to_place} (gap: {remaining_gap})")
+                    await self.place_backpack_post_only_order(side, quantity_to_place)
+                except requests.exceptions.RequestException as e:
+                    self.logger.error(f"⚠️ Network error (Retrying): {e}")
+                    await asyncio.sleep(1)
+                    continue
                 except Exception as e:
                     self.logger.error(f"⚠️ Error in trading loop: {e}")
                     self.logger.error(f"⚠️ Full traceback: {traceback.format_exc()}")
                     break
 
+                start_time = time.time()
                 while not self.order_execution_complete and not self.stop_flag:
-                    # Check if Backpack order filled and we need to place Lighter order
                     if self.waiting_for_lighter_fill:
                         await self.place_lighter_market_order(
                             self.current_lighter_side,
@@ -1187,10 +1210,10 @@ class HedgeBot:
                     if time.time() - start_time > 180:
                         self.logger.error("❌ Timeout waiting for trade completion")
                         break
-                
-                if exit_after_next_trade:
-                    self.logger.info("Position back to zero. Done! Exiting...")
-                    break
+            
+            if self.sleep_time > 0 and not self.stop_flag:
+                self.logger.info(f"💤 Sleeping {self.sleep_time} seconds after zeroing position...")
+                await asyncio.sleep(self.sleep_time)
 
     async def run(self):
         """Run the hedge bot."""

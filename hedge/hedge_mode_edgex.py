@@ -203,8 +203,9 @@ class HedgeBot:
 
             self.lighter_client = SignerClient(
                 url=self.lighter_base_url,
-                account_index=self.account_index,
-                api_private_keys={self.api_key_index: api_key_private_key}
+                private_key=api_key_private_key,
+                api_key_index=self.api_key_index,
+                account_index=self.account_index
             )
 
             # Check client
@@ -627,7 +628,7 @@ class HedgeBot:
 
                     # Get auth token for the subscription
                     try:
-                        auth_token, err = self.lighter_client.create_auth_token_with_expiry(api_key_index=self.api_key_index)
+                        auth_token, err = self.lighter_client.create_auth_token_with_expiry()
                         if err is not None:
                             self.logger.warning(f"⚠️ Failed to create auth token for account orders subscription: {err}")
                         else:

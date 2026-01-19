@@ -43,15 +43,14 @@ class LighterClient(BaseExchangeClient):
         if not self.api_key_private_key:
             raise ValueError("API_KEY_PRIVATE_KEY must be set in environment variables")
 
+        self.api_client = ApiClient(configuration=Configuration(host=self.base_url))
+
         # Initialize logger
         self.logger = TradingLogger(exchange="lighter", ticker=self.config.ticker, log_to_console=False)
         self._order_update_handler = None
 
         # Initialize Lighter client (will be done in connect)
         self.lighter_client = None
-
-        # Initialize API client (will be done in connect)
-        self.api_client = None
 
         # Market configuration
         self.base_amount_multiplier = None
@@ -104,8 +103,9 @@ class LighterClient(BaseExchangeClient):
             try:
                 self.lighter_client = SignerClient(
                     url=self.base_url,
-                    account_index=self.account_index,
-                    api_private_keys={self.api_key_index: self.api_key_private_key}
+                    private_key=self.api_key_private_key,
+                    api_key_index=self.api_key_index,
+                    account_index=self.account_index
                 )
 
                 # Check client
@@ -122,9 +122,6 @@ class LighterClient(BaseExchangeClient):
     async def connect(self) -> None:
         """Connect to Lighter."""
         try:
-            # Initialize shared API client
-            self.api_client = ApiClient(configuration=Configuration(host=self.base_url))
-
             # Initialize Lighter client
             await self._initialize_lighter_client()
 
@@ -438,7 +435,7 @@ class LighterClient(BaseExchangeClient):
             await self._initialize_lighter_client()
 
         # Generate auth token for API call
-        auth_token, error = self.lighter_client.create_auth_token_with_expiry(api_key_index=self.api_key_index)
+        auth_token, error = self.lighter_client.create_auth_token_with_expiry()
         if error is not None:
             self.logger.log(f"Error creating auth token: {error}", "ERROR")
             raise ValueError(f"Error creating auth token: {error}")
@@ -468,19 +465,20 @@ class LighterClient(BaseExchangeClient):
         for order in order_list:
             # Convert Lighter Order to OrderInfo
             side = "sell" if order.is_ask else "buy"
-            size = Decimal(order.initial_base_amount)
-            price = Decimal(order.price)
+            size = Decimal(order.initial_base_amount) / Decimal(self.base_amount_multiplier)
+            price = Decimal(order.price) / Decimal(self.price_multiplier)
+            remaining_size = Decimal(order.remaining_base_amount) / Decimal(self.base_amount_multiplier)
 
             # Only include orders with remaining size > 0
-            if size > 0:
+            if remaining_size > 0:
                 contract_orders.append(OrderInfo(
                     order_id=str(order.order_index),
                     side=side,
-                    size=Decimal(order.remaining_base_amount),  # FIXME: This is wrong. Should be size
+                    size=size,
                     price=price,
-                    status=order.status.upper(),
-                    filled_size=Decimal(order.filled_base_amount),
-                    remaining_size=Decimal(order.remaining_base_amount)
+                    status="open",
+                    filled_size=size - remaining_size,
+                    remaining_size=remaining_size
                 ))
 
         return contract_orders
@@ -508,7 +506,15 @@ class LighterClient(BaseExchangeClient):
         # Find position for current market
         for position in positions:
             if position.market_id == self.config.contract_id:
-                return Decimal(position.position)
+                amt_str = str(position.position)
+                amt = Decimal(amt_str)
+                # sign: 0 for positive, 1 for negative (standard Lighter SDK)
+                if hasattr(position, 'sign') and position.sign == 1:
+                    return -abs(amt)
+                # If amount already negative in string, use it
+                if amt_str.startswith('-'):
+                    return amt
+                return abs(amt)
 
         return Decimal(0)
 

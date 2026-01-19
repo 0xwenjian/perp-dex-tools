@@ -242,7 +242,8 @@ class LighterCustomWebSocketManager:
         reconnect_delay = 1  # Start with 1 second delay
         max_reconnect_delay = 30  # Maximum delay of 30 seconds
 
-        while True:
+        self.running = True
+        while self.running:
             try:
                 # Reset order book state before connecting
                 await self.reset_order_book()
