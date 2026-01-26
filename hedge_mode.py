@@ -147,14 +147,14 @@ async def main():
         # v2 bot has different constructor signature (no iterations/sleep_time)
         if args.v2 and args.exchange.lower() == 'grvt':
             bot = HedgeBotClass(
-                ticker=args.ticker.upper(),
+                ticker=args.ticker,
                 order_quantity=Decimal(args.size),
                 fill_timeout=args.fill_timeout,
                 max_position=args.max_position
             )
         elif args.exchange in ['backpack', 'edgex', 'nado', 'grvt', 'standx']:
             bot = HedgeBotClass(
-                ticker=args.ticker.upper(),
+                ticker=args.ticker,
                 order_quantity=Decimal(args.size),
                 fill_timeout=args.fill_timeout,
                 iterations=args.iter,
@@ -163,7 +163,7 @@ async def main():
             )
         else:
             bot = HedgeBotClass(
-                ticker=args.ticker.upper(),
+                ticker=args.ticker,
                 order_quantity=Decimal(args.size),
                 fill_timeout=args.fill_timeout,
                 iterations=args.iter,

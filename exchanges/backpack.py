@@ -172,6 +172,9 @@ class BackpackClient(BaseExchangeClient):
 
         self._order_update_handler = None
 
+        # Initialize logger using the same format as helpers
+        self.logger = TradingLogger(exchange="backpack", ticker=self.config.ticker, log_to_console=False)
+
     def _validate_config(self) -> None:
         """Validate Backpack configuration."""
         required_env_vars = ['BACKPACK_PUBLIC_KEY', 'BACKPACK_SECRET_KEY']
@@ -191,8 +194,6 @@ class BackpackClient(BaseExchangeClient):
         # Pass config to WebSocket manager for order type determination
         self.ws_manager.config = self.config
 
-        # Initialize logger using the same format as helpers
-        self.logger = TradingLogger(exchange="backpack", ticker=self.config.ticker, log_to_console=False)
         self.ws_manager.set_logger(self.logger)
 
         try:
@@ -574,7 +575,7 @@ class BackpackClient(BaseExchangeClient):
         markets = self.public_client.get_markets()
         min_quantity = Decimal(0)
         for market in markets:
-            if (market.get('marketType', '') == 'PERP' and market.get('baseSymbol', '') == ticker and
+            if (market.get('marketType', '') == 'PERP' and market.get('baseSymbol', '').lower() == ticker.lower() and
                     market.get('quoteSymbol', '') == 'USDC'):
                 self.config.contract_id = market.get('symbol', '')
                 min_quantity = Decimal(market.get('filters', {}).get('quantity', {}).get('minQuantity', 0))

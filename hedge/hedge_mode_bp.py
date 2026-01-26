@@ -563,15 +563,25 @@ class HedgeBot:
             if "order_books" not in data:
                 raise Exception("Unexpected response format")
 
+            # Handle symbol mapping for Lighter
+            lighter_ticker = self.ticker
+            if self.ticker.lower() == 'kshib':
+                lighter_ticker = '1000SHIB'
+            elif self.ticker.lower() == 'kpepe':
+                lighter_ticker = '1000PEPE'
+            elif self.ticker.lower() == 'kbonk':
+                lighter_ticker = '1000BONK'
+
             for market in data["order_books"]:
-                if market["symbol"] == self.ticker:
+                if market["symbol"].lower() == lighter_ticker.lower():
                     price_multiplier = pow(10, market["supported_price_decimals"])
                     return (market["market_id"], 
                            pow(10, market["supported_size_decimals"]), 
                            price_multiplier,
                            Decimal("1") / (Decimal("10") ** market["supported_price_decimals"])
                            )
-            raise Exception(f"Ticker {self.ticker} not found")
+            
+            raise Exception(f"Ticker {self.ticker} (Lighter: {lighter_ticker}) not found")
 
         except Exception as e:
             self.logger.error(f"⚠️ Error getting market config: {e}")
