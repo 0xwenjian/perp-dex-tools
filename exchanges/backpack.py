@@ -251,6 +251,8 @@ class BackpackClient(BaseExchangeClient):
             is_close_order = (order_side == self.config.close_order_side)
             order_type = "CLOSE" if is_close_order else "OPEN"
 
+            fee = Decimal(order_data.get('n', '0'))
+
             if event_type == 'orderFill' and quantity == fill_quantity:
                 if self._order_update_handler:
                     self._order_update_handler({
@@ -261,7 +263,8 @@ class BackpackClient(BaseExchangeClient):
                         'size': quantity,
                         'price': price,
                         'contract_id': symbol,
-                        'filled_size': fill_quantity
+                        'filled_size': fill_quantity,
+                        'fee': fee
                     })
 
             elif event_type in ['orderFill', 'orderAccepted', 'orderCancelled', 'orderExpired']:
@@ -281,7 +284,8 @@ class BackpackClient(BaseExchangeClient):
                         'size': quantity,
                         'price': price,
                         'contract_id': symbol,
-                        'filled_size': fill_quantity
+                        'filled_size': fill_quantity,
+                        'fee': fee
                     })
 
         except Exception as e:
@@ -490,16 +494,24 @@ class BackpackClient(BaseExchangeClient):
             )
 
             if not cancel_result:
+                self.logger.log(f"Cancel returned empty result for {order_id}", "WARNING")
                 return OrderResult(success=False, error_message='Failed to cancel order')
+            
             if 'code' in cancel_result:
-                self.logger.log(
-                    f"[CLOSE] Failed to cancel order {order_id}: {cancel_result.get('message', 'Unknown error')}", "ERROR")
-                filled_size = self.config.quantity
-            else:
-                filled_size = Decimal(cancel_result.get('executedQuantity', 0))
+                msg = cancel_result.get('message', 'Unknown error')
+                self.logger.log(f"Failed to cancel order {order_id}: {msg}", "DEBUG")
+                
+                # If order is already filled or not found, it's potentially OK
+                if "order not found" in msg.lower() or "too late to cancel" in msg.lower() or "order is filled" in msg.lower():
+                     # Assume it might be filled, caller should check position
+                     return OrderResult(success=True, error_message=msg, filled_size=self.config.quantity)
+                return OrderResult(success=False, error_message=msg)
+            
+            filled_size = Decimal(cancel_result.get('executedQuantity', 0))
             return OrderResult(success=True, filled_size=filled_size)
 
         except Exception as e:
+            self.logger.log(f"Exception during cancel {order_id}: {e}", "ERROR")
             return OrderResult(success=False, error_message=str(e))
 
     @query_retry()

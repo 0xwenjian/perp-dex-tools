@@ -5,4 +5,12 @@ caffeinate -i -s python3 hedge_mode.py --exchange backpack --ticker kSHIB --size
 
 caffeinate -i -s python3 hedge_mode.py --exchange backpack --ticker hbar --size 1000 --iter 2 --sleep 14400
 
+caffeinate -i -s python3 hedge_mode.py --exchange backpack --ticker eth --size  0.02 --iter 2 --sleep 20
+
 python3 dashboard_server.py
+
+python3 hedge_mode.py --exchange backpack_paradex --ticker kSHIB --size 1000 --iter 2 --sleep 20
+
+python3 hedge_mode.py --exchange backpack_paradex --ticker ETH --size 0.02 --iter 2 --sleep 20
+
+python3 hedge_mode.py --exchange backpack_paradex --ticker PYTH --size 2000 --iter 2 --sleep 720

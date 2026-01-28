@@ -18,13 +18,14 @@ def patch_paradex_http_client():
     try:
         from paradex_py.api.http_client import HttpClient
 
-        def patched_request(self, url, http_method, params=None, payload=None, headers=None):
+        def patched_request(self, url, http_method, params=None, payload=None, headers=None, **kwargs):
             res = self.client.request(
                 method=http_method.value,
                 url=url,
                 params=params,
                 json=payload,
                 headers=headers,
+                **kwargs
             )
             if res.status_code >= 300:
                 from paradex_py.api.models import ApiErrorSchema
@@ -420,6 +421,88 @@ class ParadexClient(BaseExchangeClient):
             )
         else:
             raise Exception(f"[OPEN] [{order_id}] Unexpected order status: {order_status}")
+
+    async def place_market_order(self, contract_id: str, quantity: Decimal, direction: str) -> OrderResult:
+        """Place a market order with Paradex and wait for fill details."""
+        from paradex_py.common.order import Order, OrderType, OrderSide
+
+        if direction == 'buy':
+            order_side = OrderSide.Buy
+        elif direction == 'sell':
+            order_side = OrderSide.Sell
+        else:
+            raise Exception(f"[OPEN] Invalid direction: {direction}")
+
+        order = Order(
+            market=contract_id,
+            order_type=OrderType.Market,
+            order_side=order_side,
+            size=quantity.quantize(self.order_size_increment, rounding=ROUND_HALF_UP)
+        )
+
+        order_result = self._submit_order_with_retry(order)
+        order_id = order_result.get('id')
+        
+        if not order_id:
+             return OrderResult(success=False, error_message="Failed to get Order ID from Paradex")
+
+        # Poll for fill info
+        self.logger.log(f"Market order {order_id} submitted, polling for fill details...", "INFO")
+        
+        fill_price = None
+        fee = Decimal('0')
+        start_time = time.time()
+        
+        while time.time() - start_time < 15: # Increased timeout slightly
+            order_info = await self.get_order_info(order_id)
+            if order_info and order_info.status == 'CLOSED':
+                # Re-fetch raw data for extra fields
+                raw_data = self.paradex.api_client.fetch_order(order_id)
+                self.logger.log(f"DEBUG: Paradex order {order_id} raw data: {raw_data}", "DEBUG")
+                
+                # Try multiple possible field names for price
+                fill_price_val = raw_data.get('avg_fill_price') or raw_data.get('price')
+                fill_price = Decimal(str(fill_price_val)) if fill_price_val else Decimal('0')
+                
+                # Fee handling: try root 'fee' first
+                fee = Decimal(str(raw_data.get('fee', 0)))
+                
+                # If fee is 0, ALWAYS try to fetch fills list to get the actual fee
+                if fee == 0 or fill_price == 0:
+                     try:
+                         # Use fetch_fills to get more detail
+                         fills_res = self.paradex.api_client.fetch_fills({"market": contract_id, "page_size": 20})
+                         order_fills = [f for f in fills_res.get('results', []) if str(f.get('order_id')) == str(order_id)]
+                         if order_fills:
+                             total_val = sum(Decimal(str(f.get('price', 0))) * Decimal(str(f.get('size', 0))) for f in order_fills)
+                             total_size = sum(Decimal(str(f.get('size', 0))) for f in order_fills)
+                             if total_size > 0 and fill_price == 0:
+                                 fill_price = total_val / total_size
+                             
+                             # Sum all fees from fills
+                             fee = sum(Decimal(str(f.get('fee', 0))) for f in order_fills)
+                             self.logger.log(f"Extracted from fills: Price={fill_price}, Fee={fee}", "DEBUG")
+                     except Exception as e:
+                         self.logger.log(f"Failed to fetch fills for extra data: {e}", "DEBUG")
+                
+                break
+            await asyncio.sleep(0.5)
+
+        if fill_price is None or fill_price == 0:
+             # Fallback: get current BBO mid price if everything else fails
+             best_bid, best_ask = await self.fetch_bbo_prices(contract_id)
+             fill_price = (best_bid + best_ask) / 2
+             self.logger.log(f"Warning: Could not get exact fill price for {order_id}. Using BBO mid-price: {fill_price}", "WARN")
+
+        return OrderResult(
+            success=True,
+            order_id=order_id,
+            side=direction,
+            size=quantity,
+            price=fill_price,
+            fee=fee,
+            status='FILLED'
+        )
 
     async def _get_active_close_orders(self, contract_id: str) -> int:
         """Get active close orders for a contract using official SDK."""

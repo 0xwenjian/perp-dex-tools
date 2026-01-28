@@ -92,6 +92,11 @@ class TradingLogger:
             self.logger.error(formatted_message)
         else:
             self.logger.info(formatted_message)
+        
+        # Flush to ensure output is written to file immediately
+        for handler in self.logger.handlers:
+            if isinstance(handler, logging.FileHandler):
+                handler.flush()
 
     def log_transaction(self, order_id: str, side: str, quantity: Decimal, price: Decimal, status: str):
         """Log a transaction to CSV file."""

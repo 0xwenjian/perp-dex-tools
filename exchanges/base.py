@@ -43,6 +43,7 @@ class OrderResult:
     status: Optional[str] = None
     error_message: Optional[str] = None
     filled_size: Optional[Decimal] = None
+    fee: Optional[Decimal] = Decimal('0')
 
 
 @dataclass

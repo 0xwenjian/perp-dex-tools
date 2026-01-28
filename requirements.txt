@@ -32,3 +32,6 @@ git+https://github.com/your-quantguy/nado-python-sdk.git@7728e97dd030cf744f08afd
 
 # standx
 pynacl==1.6.2
+
+# Paradex
+paradex-py==1.3.1
