@@ -391,63 +391,116 @@ class HedgeBot:
         return res
 
     async def execute_hedge_on_paradex(self, side: str, quantity: Decimal):
-        """Execute market order on Paradex to hedge with retry mechanism."""
-        max_retries = 3
-        retry_delay = 2  # seconds
+        """Execute market order on Paradex with partial fill retry mechanism."""
+        max_retries = 5  # Increased for partial fills
+        retry_delay = 2
+        
+        remaining = quantity
+        total_filled = Decimal('0')
+        total_fee = Decimal('0')
+        weighted_price_sum = Decimal('0')
         
         for attempt in range(1, max_retries + 1):
-            self.logger.info(f"⚡ Hedging on Paradex: {side} {quantity} (Attempt {attempt}/{max_retries})")
+            if remaining <= Decimal('0.001'):  # Small threshold
+                break
+                
+            self.logger.info(
+                f"⚡ Hedging on Paradex: {side} {remaining} "
+                f"(Attempt {attempt}/{max_retries}, Total filled: {total_filled}/{quantity})"
+            )
             
             try:
                 result = await self.paradex_client.place_market_order(
                     self.paradex_contract_id,
-                    quantity,
+                    remaining,
                     side
                 )
                 
                 if result.success:
+                    filled = result.size  # ✅ Actual filled size from API
                     fill_price = result.price if result.price else Decimal('0')
                     fee = result.fee if result.fee else Decimal('0')
                     
-                    self.logger.info(f"✅ Paradex Hedge Filled: {quantity} @ {fill_price} (Fee: {fee})")
-                    self.log_trade_to_csv('Paradex', side, str(fill_price), str(quantity), str(fee))
+                    # Accumulate filled data
+                    total_filled += filled
+                    total_fee += fee
+                    weighted_price_sum += fill_price * filled
+                    remaining -= filled
                     
+                    self.logger.info(
+                        f"✅ Paradex Filled: {filled} @ {fill_price} (Fee: {fee})"
+                    )
+                    
+                    # Log each fill to CSV
+                    self.log_trade_to_csv('Paradex', side, str(fill_price), str(filled), str(fee))
+                    
+                    # Update position
                     if side == 'buy':
-                        self.paradex_position += quantity
+                        self.paradex_position += filled
                     else:
-                        self.paradex_position -= quantity
+                        self.paradex_position -= filled
                     
-                    self.pd_filled_price = fill_price
-                    self.pd_filled_fee = fee
-                    self.hedge_filled = True
-                    self.hedge_failed = False
-                    return True
-                else:
-                    self.logger.error(f"❌ Paradex Hedge Failed (Attempt {attempt}/{max_retries}): {result.error_message}")
-                    
-                    if attempt < max_retries:
-                        self.logger.info(f"⏳ Retrying in {retry_delay}s...")
+                    # Check if fully filled
+                    if remaining <= Decimal('0.001'):
+                        # Calculate weighted average price
+                        avg_price = weighted_price_sum / total_filled if total_filled > 0 else Decimal('0')
+                        
+                        self.pd_filled_price = avg_price
+                        self.pd_filled_fee = total_fee
+                        self.hedge_filled = True
+                        self.hedge_failed = False
+                        
+                        self.logger.info(
+                            f"✅ Paradex Hedge Completed: {total_filled} @ {avg_price} "
+                            f"(Total Fee: {total_fee})"
+                        )
+                        return True
+                    else:
+                        # Partial fill, retry remaining
+                        self.logger.warning(
+                            f"⚠️ Partial fill: {filled}/{quantity}, "
+                            f"remaining: {remaining}, retrying..."
+                        )
                         await asyncio.sleep(retry_delay)
-                    else:
-                        # All retries exhausted
-                        self.logger.error(f"❌ Paradex Hedge FAILED after {max_retries} attempts!")
-                        self.logger.error(f"⚠️ CRITICAL: Position mismatch! BP position changed but Paradex hedge failed.")
-                        self.hedge_failed = True
-                        return False
+                else:
+                    self.logger.error(
+                        f"❌ Paradex order failed (Attempt {attempt}/{max_retries}): "
+                        f"{result.error_message}"
+                    )
+                    if attempt < max_retries:
+                        await asyncio.sleep(retry_delay)
                         
             except Exception as e:
-                self.logger.error(f"❌ Paradex Hedge Exception (Attempt {attempt}/{max_retries}): {e}")
+                self.logger.error(f"❌ Paradex Exception (Attempt {attempt}): {e}")
                 self.logger.debug(traceback.format_exc())
-                
                 if attempt < max_retries:
-                    self.logger.info(f"⏳ Retrying in {retry_delay}s...")
                     await asyncio.sleep(retry_delay)
-                else:
-                    self.logger.error(f"❌ Paradex Hedge FAILED after {max_retries} attempts due to exceptions!")
-                    self.hedge_failed = True
-                    return False
         
-        return False
+        # Check final fill ratio
+        fill_ratio = total_filled / quantity if quantity > 0 else Decimal('0')
+        
+        if fill_ratio >= Decimal('0.95'):  # ✅ Allow 5% tolerance
+            # Accept with minor shortfall
+            avg_price = weighted_price_sum / total_filled if total_filled > 0 else Decimal('0')
+            self.pd_filled_price = avg_price
+            self.pd_filled_fee = total_fee
+            self.hedge_filled = True
+            self.hedge_failed = False
+            
+            self.logger.warning(
+                f"⚠️ Hedge completed with shortfall: {total_filled}/{quantity} "
+                f"({fill_ratio*100:.2f}%)"
+            )
+            return True
+        else:
+            # Insufficient fill
+            self.logger.error(
+                f"❌ Hedge FAILED after {max_retries} attempts: "
+                f"{total_filled}/{quantity} ({fill_ratio*100:.2f}%)"
+            )
+            self.logger.error(f"⚠️ CRITICAL: Position mismatch! BP position changed but Paradex hedge failed.")
+            self.hedge_failed = True
+            return False
 
     def report_cycle_pnl(self):
         """Calculate and report PnL for the completed hedge."""
@@ -575,7 +628,35 @@ class HedgeBot:
                         if self.waiting_for_hedge_fill:
                             success = await self.execute_hedge_on_paradex(self.current_hedge_side, self.current_hedge_quantity)
                             if not success or self.hedge_failed:
-                                self.logger.error("❌ Hedge failed, stopping trading...")
+                                self.logger.error("❌ Hedge failed after all retries!")
+                                self.logger.error(f"⚠️ CRITICAL: BP has position {self.backpack_position} but Paradex hedge failed")
+                                
+                                # ✅ Auto-close BP position to avoid one-sided risk
+                                if abs(self.backpack_position) > Decimal('0.001'):
+                                    self.logger.warning("🔄 Attempting to close BP position...")
+                                    
+                                    # Determine close side (opposite of current position)
+                                    close_side = 'sell' if self.backpack_position > 0 else 'buy'
+                                    close_qty = abs(self.backpack_position)
+                                    
+                                    # Place market order to close immediately
+                                    try:
+                                        close_result = await self.backpack_client.place_market_order(
+                                            self.backpack_contract_id,
+                                            close_qty,
+                                            close_side
+                                        )
+                                        
+                                        if close_result.success:
+                                            self.logger.info(
+                                                f"✅ BP position closed: {close_side} {close_qty} @ {close_result.price}"
+                                            )
+                                            self.backpack_position = Decimal('0')
+                                        else:
+                                            self.logger.error(f"❌ Failed to close BP position: {close_result.error_message}")
+                                    except Exception as e:
+                                        self.logger.error(f"❌ Exception closing BP position: {e}")
+                                
                                 self.stop_flag = True
                                 break
                             await self.sync_positions()  # Verify positions after hedge
@@ -586,9 +667,32 @@ class HedgeBot:
 
                     # Calibration sync after each major step
                     await self.sync_positions()
+                    
+                    # ✅ Verify positions match before sleeping
+                    expected_paradex = -self.backpack_position  # Paradex should be opposite
+                    position_diff = abs(self.paradex_position - expected_paradex)
+                    
+                    if position_diff > Decimal('0.01'):  # Allow small rounding error
+                        self.logger.error(
+                            f"❌ Position mismatch after entry! "
+                            f"BP: {self.backpack_position}, Paradex: {self.paradex_position} "
+                            f"(Expected: {expected_paradex}, Diff: {position_diff})"
+                        )
+                        
+                        # Try to reconcile
+                        reconcile_success = await self.reconcile_positions()
+                        if not reconcile_success:
+                            self.logger.error("❌ Failed to reconcile positions, stopping...")
+                            self.stop_flag = True
+                            break
+                    else:
+                        self.logger.info(
+                            f"✅ Positions matched: BP={self.backpack_position}, "
+                            f"Paradex={self.paradex_position}"
+                        )
 
                     if self.sleep_time > 0 and not self.stop_flag:
-                        self.logger.info(f"Sleeping for {self.sleep_time}s...")
+                        self.logger.info(f"😴 Sleeping for {self.sleep_time}s...")
                         await asyncio.sleep(self.sleep_time)
 
                     # 2. Sell on Backpack, Buy on Paradex (EXIT/UNWIND)
@@ -618,9 +722,66 @@ class HedgeBot:
                         wait_start = time.time()
                         while not self.stop_flag:
                             if self.waiting_for_hedge_fill:
-                                success = await self.execute_hedge_on_paradex(self.current_hedge_side, self.current_hedge_quantity)
+                                # ✅ Before hedging in EXIT, check Paradex position
+                                # to ensure we only close existing short, not reverse to long
+                                await self.sync_positions()
+                                
+                                # Calculate how much short position we have
+                                current_short = -self.paradex_position if self.paradex_position < 0 else Decimal('0')
+                                
+                                # Only close up to current short position
+                                hedge_qty = min(self.current_hedge_quantity, current_short)
+                                
+                                if hedge_qty <= Decimal('0.001'):
+                                    self.logger.warning(
+                                        f"⚠️ Paradex has no short position to close! "
+                                        f"Current position: {self.paradex_position}, "
+                                        f"Skipping hedge to avoid reverse opening."
+                                    )
+                                    self.waiting_for_hedge_fill = False
+                                    continue
+                                
+                                if hedge_qty < self.current_hedge_quantity:
+                                    self.logger.warning(
+                                        f"⚠️ Reducing hedge quantity to match short position: "
+                                        f"{self.current_hedge_quantity} → {hedge_qty}"
+                                    )
+                                
+                                self.logger.info(
+                                    f"🔄 Closing Paradex short: {hedge_qty} "
+                                    f"(Current position: {self.paradex_position})"
+                                )
+                                
+                                # Execute hedge with adjusted quantity
+                                success = await self.execute_hedge_on_paradex(self.current_hedge_side, hedge_qty)
                                 if not success or self.hedge_failed:
-                                    self.logger.error("❌ Hedge failed, stopping trading...")
+                                    self.logger.error("❌ Hedge failed after all retries!")
+                                    self.logger.error(f"⚠️ CRITICAL: BP has position {self.backpack_position} but Paradex hedge failed")
+                                    
+                                    # ✅ Auto-close remaining BP position
+                                    if abs(self.backpack_position) > Decimal('0.001'):
+                                        self.logger.warning("🔄 Attempting to close remaining BP position...")
+                                        
+                                        close_side = 'sell' if self.backpack_position > 0 else 'buy'
+                                        close_qty = abs(self.backpack_position)
+                                        
+                                        try:
+                                            close_result = await self.backpack_client.place_market_order(
+                                                self.backpack_contract_id,
+                                                close_qty,
+                                                close_side
+                                            )
+                                            
+                                            if close_result.success:
+                                                self.logger.info(
+                                                    f"✅ BP position closed: {close_side} {close_qty} @ {close_result.price}"
+                                                )
+                                                self.backpack_position = Decimal('0')
+                                            else:
+                                                self.logger.error(f"❌ Failed to close BP position: {close_result.error_message}")
+                                        except Exception as e:
+                                            self.logger.error(f"❌ Exception closing BP position: {e}")
+                                    
                                     self.stop_flag = True
                                     break
                                 await self.sync_positions()  # Verify positions after hedge

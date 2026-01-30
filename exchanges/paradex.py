@@ -451,6 +451,7 @@ class ParadexClient(BaseExchangeClient):
         
         fill_price = None
         fee = Decimal('0')
+        filled_size = Decimal('0')  # ✅ Track actual filled size
         start_time = time.time()
         
         while time.time() - start_time < 15: # Increased timeout slightly
@@ -460,6 +461,9 @@ class ParadexClient(BaseExchangeClient):
                 raw_data = self.paradex.api_client.fetch_order(order_id)
                 self.logger.log(f"DEBUG: Paradex order {order_id} raw data: {raw_data}", "DEBUG")
                 
+                # ✅ Get actual filled size
+                filled_size = Decimal(str(raw_data.get('filled_size', 0)))
+                
                 # Try multiple possible field names for price
                 fill_price_val = raw_data.get('avg_fill_price') or raw_data.get('price')
                 fill_price = Decimal(str(fill_price_val)) if fill_price_val else Decimal('0')
@@ -467,8 +471,8 @@ class ParadexClient(BaseExchangeClient):
                 # Fee handling: try root 'fee' first
                 fee = Decimal(str(raw_data.get('fee', 0)))
                 
-                # If fee is 0, ALWAYS try to fetch fills list to get the actual fee
-                if fee == 0 or fill_price == 0:
+                # If fee is 0 or filled_size is 0, ALWAYS try to fetch fills list
+                if fee == 0 or fill_price == 0 or filled_size == 0:
                      try:
                          # Use fetch_fills to get more detail
                          fills_res = self.paradex.api_client.fetch_fills({"market": contract_id, "page_size": 20})
@@ -476,14 +480,30 @@ class ParadexClient(BaseExchangeClient):
                          if order_fills:
                              total_val = sum(Decimal(str(f.get('price', 0))) * Decimal(str(f.get('size', 0))) for f in order_fills)
                              total_size = sum(Decimal(str(f.get('size', 0))) for f in order_fills)
-                             if total_size > 0 and fill_price == 0:
-                                 fill_price = total_val / total_size
+                             
+                             # Use fills data if more reliable
+                             if total_size > 0:
+                                 if filled_size == 0:
+                                     filled_size = total_size
+                                 if fill_price == 0:
+                                     fill_price = total_val / total_size
                              
                              # Sum all fees from fills
-                             fee = sum(Decimal(str(f.get('fee', 0))) for f in order_fills)
-                             self.logger.log(f"Extracted from fills: Price={fill_price}, Fee={fee}", "DEBUG")
+                             if fee == 0:
+                                 fee = sum(Decimal(str(f.get('fee', 0))) for f in order_fills)
+                             
+                             self.logger.log(f"Extracted from fills: Size={filled_size}, Price={fill_price}, Fee={fee}", "DEBUG")
                      except Exception as e:
                          self.logger.log(f"Failed to fetch fills for extra data: {e}", "DEBUG")
+                
+                # ✅ Check if partially filled
+                if filled_size < quantity:
+                    fill_ratio = (filled_size / quantity * 100) if quantity > 0 else Decimal('0')
+                    self.logger.log(
+                        f"⚠️ Market order partially filled: {filled_size}/{quantity} ({fill_ratio:.2f}%) "
+                        f"(Status: {raw_data.get('status')})",
+                        "WARN"
+                    )
                 
                 break
             await asyncio.sleep(0.5)
@@ -494,11 +514,12 @@ class ParadexClient(BaseExchangeClient):
              fill_price = (best_bid + best_ask) / 2
              self.logger.log(f"Warning: Could not get exact fill price for {order_id}. Using BBO mid-price: {fill_price}", "WARN")
 
+        # ✅ Return actual filled size, not requested quantity
         return OrderResult(
             success=True,
             order_id=order_id,
             side=direction,
-            size=quantity,
+            size=filled_size,  # ← Use actual filled size
             price=fill_price,
             fee=fee,
             status='FILLED'
@@ -665,12 +686,16 @@ class ParadexClient(BaseExchangeClient):
         # Find position for current market
         for position in positions:
             if isinstance(position, dict) and position.get('market') == self.config.contract_id and position.get('status') == 'OPEN':
-                if position.get('side') == 'LONG' and self.config.direction == 'sell':
-                    raise ValueError("Long position found for sell direction")
-                elif position.get('side') == 'SHORT' and self.config.direction == 'buy':
-                    raise ValueError("Short position found for buy direction")
-
-                return abs(Decimal(position.get('size', 0)).quantize(self.order_size_increment, rounding=ROUND_HALF_UP))
+                position_size = abs(Decimal(position.get('size', 0)).quantize(self.order_size_increment, rounding=ROUND_HALF_UP))
+                
+                if position_size != 0:
+                    self.logger.log(f"Current position: {position_size} {self.config.contract_id}", "INFO")
+                    
+                    # Note: In hedging strategy, opposite positions are expected
+                    # BP long + Paradex short = neutral hedge
+                    # So we don't validate direction here
+                
+                return position_size
 
         return Decimal(0)
 
