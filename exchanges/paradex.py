@@ -679,22 +679,30 @@ class ParadexClient(BaseExchangeClient):
         return positions_response['results']
 
     async def get_account_positions(self) -> Decimal:
-        """Get account positions using official SDK."""
+        """Get account positions using official SDK. Returns signed position: LONG=positive, SHORT=negative."""
         # Get account info which includes positions
         positions = await self._fetch_positions_with_retry()
 
         # Find position for current market
         for position in positions:
             if isinstance(position, dict) and position.get('market') == self.config.contract_id and position.get('status') == 'OPEN':
-                position_size = abs(Decimal(position.get('size', 0)).quantize(self.order_size_increment, rounding=ROUND_HALF_UP))
+                size = Decimal(position.get('size', 0)).quantize(self.order_size_increment, rounding=ROUND_HALF_UP)
+                side = position.get('side')  # 'LONG' or 'SHORT'
+                
+                # Return signed position: LONG=positive, SHORT=negative
+                if side == 'LONG':
+                    position_size = abs(size)
+                elif side == 'SHORT':
+                    position_size = -abs(size)
+                else:
+                    position_size = Decimal(0)
                 
                 if position_size != 0:
-                    self.logger.log(f"Current position: {position_size} {self.config.contract_id}", "INFO")
-                    
-                    # Note: In hedging strategy, opposite positions are expected
-                    # BP long + Paradex short = neutral hedge
-                    # So we don't validate direction here
-                
+                    self.logger.log(
+                        f"Current position: {position_size} {self.config.contract_id} ({side})", 
+                        "INFO"
+                    )
+            
                 return position_size
 
         return Decimal(0)
@@ -742,7 +750,11 @@ class ParadexClient(BaseExchangeClient):
             self.logger.log("Ticker is empty", "ERROR")
             raise ValueError("Ticker is empty")
 
-        symbol = f"{ticker}-USD-PERP"
+        # Special handling for kSHIB - keep lowercase 'k'
+        if ticker.upper() == 'KSHIB':
+            symbol = f"kSHIB-USD-PERP"
+        else:
+            symbol = f"{ticker}-USD-PERP"
 
         market = await self._fetch_market_with_retry(symbol)
         market_summary = await self._fetch_markets_summary_with_retry(symbol)

@@ -509,10 +509,35 @@ class BackpackClient(BaseExchangeClient):
             
             filled_size = Decimal(cancel_result.get('executedQuantity', 0))
             return OrderResult(success=True, filled_size=filled_size)
-
         except Exception as e:
             self.logger.log(f"Exception during cancel {order_id}: {e}", "ERROR")
             return OrderResult(success=False, error_message=str(e))
+
+    async def cancel_all_orders(self, contract_id: str) -> bool:
+        """Cancel all open orders for a contract."""
+        try:
+            self.logger.log(f"Cancelling all orders for {contract_id}...", "INFO")
+            
+            # Use get_open_orders to find orders to cancel
+            # Run in thread since SDK calls are synchronous
+            orders_data = await asyncio.to_thread(self.account_client.get_open_orders, symbol=contract_id)
+            
+            if not orders_data:
+                return True
+
+            tasks = []
+            for order in orders_data:
+                order_id = order.get('id') or order.get('orderId')
+                if order_id:
+                    tasks.append(self.cancel_order(order_id))
+            
+            if tasks:
+                await asyncio.gather(*tasks)
+            
+            return True
+        except Exception as e:
+            self.logger.log(f"Exception in cancel_all_orders: {e}", "ERROR")
+            return False
 
     @query_retry()
     async def get_order_info(self, order_id: str) -> Optional[OrderInfo]:

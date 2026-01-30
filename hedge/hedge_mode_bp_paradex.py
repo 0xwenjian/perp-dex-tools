@@ -41,7 +41,7 @@ class HedgeBot:
                 writer = csv.writer(csvfile)
                 writer.writerow(['exchange', 'timestamp', 'side', 'price', 'quantity', 'fee'])
 
-    def __init__(self, ticker: str, order_quantity: Decimal, fill_timeout: int = 5, iterations: int = 20, sleep_time: int = 0, max_position: Decimal = Decimal('0')):
+    def __init__(self, ticker: str, order_quantity: Decimal, fill_timeout: int = 16, iterations: int = 20, sleep_time: int = 0, max_position: Decimal = Decimal('0')):
         self.ticker = ticker
         self.order_quantity = order_quantity
         self.fill_timeout = fill_timeout
@@ -355,6 +355,14 @@ class HedgeBot:
         """Place Post-Only order on Backpack."""
         self.backpack_order_status = 'NEW'
         
+        # Safety: Cancel all existing orders for this market before placing new one
+        try:
+            self.logger.info(f"🧹 Cancelling any open orders for {self.backpack_contract_id}...")
+            await self.backpack_client.cancel_all_orders(self.backpack_contract_id)
+            await asyncio.sleep(0.5) # Allow time for propagation
+        except Exception as e:
+            self.logger.warning(f"Failed to cancel open orders: {e}")
+
         # Get BBO
         best_bid, best_ask = await self.backpack_client.fetch_bbo_prices(self.backpack_contract_id)
         

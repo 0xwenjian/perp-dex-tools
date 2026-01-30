@@ -56,8 +56,8 @@ Examples:
                         help='Number of tokens to buy/sell per order')
     parser.add_argument('--iter', type=int, required=True,
                         help='Number of iterations to run')
-    parser.add_argument('--fill-timeout', type=int, default=5,
-                        help='Timeout in seconds for maker order fills (default: 5)')
+    parser.add_argument('--fill-timeout', type=int, default=None,
+                        help='Timeout in seconds for maker order fills (default: varies by exchange)')
     parser.add_argument('--sleep', type=int, default=0,
                         help='Sleep time in seconds after each step (default: 0)')
     parser.add_argument('--env-file', type=str, default=".env",
@@ -146,20 +146,28 @@ async def main():
     print(f"Ticker: {args.ticker}, Size: {args.size}, Iterations: {args.iter}")
     print("-" * 50)
     
+    # Set default fill timeout if not provided
+    fill_timeout = args.fill_timeout
+    if fill_timeout is None:
+        if args.exchange == 'backpack_paradex':
+            fill_timeout = 16
+        else:
+            fill_timeout = 5
+    
     try:
         # v2 bot has different constructor signature (no iterations/sleep_time)
         if args.v2 and args.exchange.lower() == 'grvt':
             bot = HedgeBotClass(
                 ticker=args.ticker,
                 order_quantity=Decimal(args.size),
-                fill_timeout=args.fill_timeout,
+                fill_timeout=fill_timeout,
                 max_position=args.max_position
             )
         elif args.exchange in ['backpack', 'edgex', 'nado', 'grvt', 'standx', 'backpack_paradex']:
             bot = HedgeBotClass(
                 ticker=args.ticker,
                 order_quantity=Decimal(args.size),
-                fill_timeout=args.fill_timeout,
+                fill_timeout=fill_timeout,
                 iterations=args.iter,
                 sleep_time=args.sleep,
                 max_position=args.max_position
@@ -168,7 +176,7 @@ async def main():
             bot = HedgeBotClass(
                 ticker=args.ticker,
                 order_quantity=Decimal(args.size),
-                fill_timeout=args.fill_timeout,
+                fill_timeout=fill_timeout,
                 iterations=args.iter,
                 sleep_time=args.sleep
             )
