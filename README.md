@@ -2,10 +2,11 @@
 原作者：[@yourQuantGuy](https://x.com/yourQuantGuy)
 better分支 dev：[@0xwenjian](https://x.com/0xwenjian)
 ---
-## 本仓库优化内容
+## better分支优化内容
 1. 新增sleep参数，用于控制脚本的运行间隔，增加持仓时常
 2. 修复kshib、kpepe等ticker的bug
 3. 完善backpack_paradex交易所直接的对冲模式 - 支持tg推送
+4. 修复lighter-bp对冲脚本若干bug
 
 **English speakers**: Please read README_EN.md for the English version of this documentation.
 
