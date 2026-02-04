@@ -115,8 +115,18 @@ class BaseExchangeClient(ABC):
         pass
 
     @abstractmethod
+    async def get_contract_attributes(self) -> Tuple[str, Decimal, Decimal]:
+        """Get contract ID, tick size, and minimum quantity."""
+        pass
+
+    @abstractmethod
     async def get_account_positions(self) -> Decimal:
         """Get account positions."""
+        pass
+
+    @abstractmethod
+    async def get_liquidation_price(self) -> Optional[Decimal]:
+        """Get liquidation price for the current market."""
         pass
 
     @abstractmethod

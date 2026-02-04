@@ -602,6 +602,17 @@ class BackpackClient(BaseExchangeClient):
         """Get account positions using official SDK."""
         return self.get_account_positions_sync()
 
+    @query_retry(default_return=None)
+    async def get_liquidation_price(self) -> Optional[Decimal]:
+        """Get liquidation price for current market on Backpack."""
+        positions_data = self.account_client.get_open_positions()
+        for pos in positions_data:
+            if pos.get('symbol') == self.config.contract_id:
+                liq_price = pos.get('liquidationPrice')
+                if liq_price:
+                    return Decimal(liq_price)
+        return None
+
     def get_contract_attributes_sync(self) -> Tuple[str, Decimal]:
         """Get contract ID for a ticker (sync)."""
         ticker = self.config.ticker
@@ -627,8 +638,8 @@ class BackpackClient(BaseExchangeClient):
             self.logger.log("Failed to get tick size for ticker", "ERROR")
             raise ValueError("Failed to get tick size for ticker")
 
-        return self.config.contract_id, self.config.tick_size
+        return self.config.contract_id, self.config.tick_size, min_quantity
 
-    async def get_contract_attributes(self) -> Tuple[str, Decimal]:
-        """Get contract ID for a ticker."""
+    async def get_contract_attributes(self) -> Tuple[str, Decimal, Decimal]:
+        """Get contract ID, tick size, and minimum quantity."""
         return self.get_contract_attributes_sync()

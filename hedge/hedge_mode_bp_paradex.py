@@ -19,6 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from exchanges.backpack import BackpackClient
 from exchanges.paradex import ParadexClient
 from exchanges.base import OrderResult
+from helpers.telegram_bot import TelegramBot
 import signal
 import traceback
 import websockets
@@ -99,6 +100,14 @@ class HedgeBot:
         self.backpack_client = None
         self.paradex_client = None
         
+        # Telegram notification setup
+        self.tg_bot = None
+        tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if tg_token and tg_chat_id:
+            self.tg_bot = TelegramBot(tg_token, tg_chat_id)
+            self.logger.info("✅ Telegram notification enabled")
+        
         self.backpack_contract_id = None
         self.backpack_tick_size = None
         self.backpack_position = Decimal('0')
@@ -141,6 +150,13 @@ class HedgeBot:
             await self.backpack_client.disconnect()
         if self.paradex_client:
             await self.paradex_client.disconnect()
+            
+        if hasattr(self, 'tg_task') and self.tg_task:
+            self.tg_task.cancel()
+            try:
+                await self.tg_task
+            except asyncio.CancelledError:
+                pass
 
     def setup_signal_handlers(self):
         signal.signal(signal.SIGINT, self.shutdown)
@@ -162,11 +178,14 @@ class HedgeBot:
         self.logger.info(f"📊 Trade logged to CSV: {exchange} {side} {quantity} @ {price} (Fee: {fee_value})")
 
     async def sync_positions(self):
-        """Sync initial positions from both exchanges."""
+        """Sync initial positions and check for liquidation risk."""
         try:
             self.backpack_position = await self.backpack_client.get_account_positions()
             self.paradex_position = await self.paradex_client.get_account_positions()
             self.logger.info(f"🔄 Positions Synced - BP: {self.backpack_position}, Paradex: {self.paradex_position}")
+            
+            # Check liquidation risk
+            await self.check_liquidation_risk()
         except Exception as e:
             self.logger.error(f"Failed to sync positions: {e}")
 
@@ -185,13 +204,34 @@ class HedgeBot:
             if abs(position_diff) > threshold:
                 self.logger.warning(f"⚠️ Position mismatch detected!")
                 self.logger.warning(f"   Backpack: {self.backpack_position}")
-                self.logger.warning(f"   Paradex: {self.paradex_position} (Expected: {expected_paradex})")
+                self.logger.warning(f"   Paradex: {self.paradex_position} (Expected: {-self.backpack_position})")
                 self.logger.warning(f"   Difference: {position_diff}")
-                self.logger.info(f"🔧 Attempting to reconcile position mismatch...")
+                
+                # Check if it's too small for Paradex
+                if abs(position_diff) < self.paradex_min_qty:
+                    self.logger.warning(f"⚠️ Mismatch {abs(position_diff)} is too small for Paradex (min: {self.paradex_min_qty})")
+                    self.logger.info(f"🔧 Attempting to reconcile by trading on Backpack instead...")
+                    
+                    # If we have 72.2 on BP and -72.0 on PD, diff is 0.2.
+                    # We need to SELL 0.2 on Backpack to reach 72.0.
+                    # Side on BP = 'sell' if position_diff > 0 else 'buy'
+                    bp_side = 'sell' if position_diff > 0 else 'buy'
+                    bp_qty = abs(position_diff)
+                    
+                    res = await self.backpack_client.place_market_order(self.backpack_contract_id, bp_qty, bp_side)
+                    if res.success:
+                        self.logger.info(f"✅ Backpack reconciliation successful")
+                        await self.sync_positions()
+                        return True
+                    else:
+                        self.logger.error(f"❌ Backpack reconciliation failed: {res.error_message}")
+                        return False
+                
+                self.logger.info(f"🔧 Attempting to reconcile position mismatch on Paradex...")
                 
                 # Determine which side to trade on Paradex to fix the mismatch
                 if position_diff > 0:
-                    # Paradex has too much long position, need to sell
+                    # Paradex has too much long position (or not enough short), need to sell
                     side = 'sell'
                     qty = abs(position_diff)
                 else:
@@ -205,14 +245,16 @@ class HedgeBot:
                 if success:
                     self.logger.info(f"✅ Position reconciliation successful")
                     await self.sync_positions()
+                    return True
                 else:
                     self.logger.error(f"❌ Position reconciliation FAILED!")
-                    self.logger.error(f"⚠️ Manual intervention may be required!")
                     return False
             
             return True
         except Exception as e:
             self.logger.error(f"Failed to reconcile positions: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return False
 
     async def initialize_clients(self):
@@ -242,10 +284,10 @@ class HedgeBot:
 
     async def get_contract_infos(self):
         """Get contract details for both exchanges."""
-        self.backpack_contract_id, self.backpack_tick_size = await self.backpack_client.get_contract_attributes()
+        self.backpack_contract_id, self.backpack_tick_size, self.backpack_min_qty = await self.backpack_client.get_contract_attributes()
         # Paradex needs uppercase ticker usually
         self.paradex_client.config.ticker = self.ticker.upper()
-        self.paradex_contract_id, self.paradex_tick_size = await self.paradex_client.get_contract_attributes()
+        self.paradex_contract_id, self.paradex_tick_size, self.paradex_min_qty = await self.paradex_client.get_contract_attributes()
         
         self.logger.info(f"Contracts loaded - Backpack: {self.backpack_contract_id}, Paradex: {self.paradex_contract_id}")
 
@@ -266,7 +308,7 @@ class HedgeBot:
             if self.active_order_id and str(order_id) == str(self.active_order_id):
                 if status == 'FILLED':
                     self.logger.info(f"[Backpack] Order FILLED: {side} {filled_size}/{size} @ {price}")
-                    bp_fee = Decimal(order_data.get('fee', '0'))
+                    bp_fee = -abs(Decimal(order_data.get('fee', '0')))
                     
                     # Log trade to CSV
                     self.log_trade_to_csv('Backpack', side, str(price), str(filled_size), str(bp_fee))
@@ -412,11 +454,6 @@ class HedgeBot:
             if remaining <= Decimal('0.001'):  # Small threshold
                 break
                 
-            self.logger.info(
-                f"⚡ Hedging on Paradex: {side} {remaining} "
-                f"(Attempt {attempt}/{max_retries}, Total filled: {total_filled}/{quantity})"
-            )
-            
             try:
                 result = await self.paradex_client.place_market_order(
                     self.paradex_contract_id,
@@ -427,7 +464,7 @@ class HedgeBot:
                 if result.success:
                     filled = result.size  # ✅ Actual filled size from API
                     fill_price = result.price if result.price else Decimal('0')
-                    fee = result.fee if result.fee else Decimal('0')
+                    fee = -abs(result.fee) if result.fee else Decimal('0')
                     
                     # Accumulate filled data
                     total_filled += filled
@@ -544,6 +581,16 @@ class HedgeBot:
             self.logger.info(f"   Cumulative Fees:    {self.total_fee:.4f} USDC")
             self.logger.info("=" * 60)
             
+            # ✅ Send real-time notification to Telegram
+            if self.tg_bot:
+                cycle_data = {
+                    'qty': qty,
+                    'bp_price': self.bp_filled_price,
+                    'pd_price': self.pd_filled_price,
+                    'net_pnl': net_pnl
+                }
+                asyncio.create_task(self.send_status_to_tg(cycle_data))
+            
             # Reset for next pair
             self.bp_filled_price = None
             self.pd_filled_price = None
@@ -556,6 +603,127 @@ class HedgeBot:
         self.logger.info(f"   Total Net PnL: {self.total_pnl:.4f} USDC")
         self.logger.info(f"   Total Fees:    {self.total_fee:.4f} USDC")
         self.logger.info("===============================================")
+        
+        # ✅ Send final summary to TG
+        if self.tg_bot:
+            message = (
+                f"🏁 <b>{self.ticker} SESSION FINAL SUMMARY</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💰 <b>Total Net PnL:</b> <code>{self.total_pnl:.4f} USDC</code>\n"
+                f"💸 <b>Total Fees:</b> <code>{self.total_fee:.4f} USDC</code>\n"
+                f"🕒 <i>Closed at: {datetime.now().strftime('%H:%M:%S')}</i>"
+            )
+            asyncio.create_task(asyncio.to_thread(self.tg_bot.send_text, message))
+
+    async def send_status_to_tg(self, cycle_info=None):
+        """Send current status to Telegram."""
+        if not self.tg_bot:
+            return
+            
+        trade_details = ""
+        if cycle_info:
+            trade_details = (
+                f"📝 <b>Last Cycle:</b>\n"
+                f"• BP: {cycle_info['qty']} @ {cycle_info['bp_price']}\n"
+                f"• PD: {cycle_info['qty']} @ {cycle_info['pd_price']}\n"
+                f"• PnL: <code>{cycle_info['net_pnl']:.4f}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+            )
+
+        message = (
+            f"✅ <b>{self.ticker} Position Update</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{trade_details}"
+            f"🏠 <b>Backpack:</b> <code>{self.backpack_position}</code>\n"
+            f"🌌 <b>Paradex:</b> <code>{self.paradex_position}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💰 <b>Net PnL:</b> <code>{self.total_pnl:.4f} USDC</code>\n"
+            f"💸 <b>Fees:</b> <code>{self.total_fee:.4f} USDC</code>\n"
+            f"🕒 <i>Updated at: {datetime.now().strftime('%H:%M:%S')}</i>"
+        )
+        
+        try:
+            await asyncio.to_thread(self.tg_bot.send_text, message)
+            self.logger.info("📡 Status report sent to Telegram")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to send Telegram report: {e}")
+
+    async def send_notification(self, title: str, status_msg: str, emoji: str = "ℹ️"):
+        """Send a general notification to Telegram."""
+        if not self.tg_bot:
+            return
+            
+        message = (
+            f"{emoji} <b>{title}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{status_msg}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🏠 <b>BP:</b> <code>{self.backpack_position}</code>\n"
+            f"🌌 <b>PD:</b> <code>{self.paradex_position}</code>\n"
+            f"💰 <b>PnL:</b> <code>{self.total_pnl:.4f}</code>\n"
+            f"🕒 <i>{datetime.now().strftime('%H:%M:%S')}</i>"
+        )
+        try:
+            await asyncio.to_thread(self.tg_bot.send_text, message)
+        except Exception as e:
+            self.logger.error(f"TG Notify Failed: {e}")
+
+    async def check_liquidation_risk(self):
+        """Check if any position is close to liquidation."""
+        if not self.tg_bot:
+            return
+            
+        try:
+            bp_liq = await self.backpack_client.get_liquidation_price()
+            pd_liq = await self.paradex_client.get_liquidation_price()
+            
+            # Get current mark price
+            best_bid, best_ask = await self.paradex_client.fetch_bbo_prices(self.paradex_contract_id)
+            mark_price = (best_bid + best_ask) / 2
+            
+            if mark_price <= 0: return
+
+            alerts = []
+            # Threshold: 10% distance to liquidation
+            threshold = Decimal('0.10')
+
+            if bp_liq and bp_liq > 0:
+                dist = abs(mark_price - bp_liq) / mark_price
+                if dist < threshold:
+                    alerts.append(f"⚠️ <b>Backpack Risk</b>\nMark: {mark_price:.4f}\nLiq: {bp_liq:.4f}\nDist: {dist*100:.2f}%")
+            
+            if pd_liq and pd_liq > 0:
+                dist = abs(mark_price - pd_liq) / mark_price
+                if dist < threshold:
+                    alerts.append(f"⚠️ <b>Paradex Risk</b>\nMark: {mark_price:.4f}\nLiq: {pd_liq:.4f}\nDist: {dist*100:.2f}%")
+            
+            for alert in alerts:
+                await self.send_notification("Liquidation Alert", alert, emoji="🚨")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to check liquidation risk: {e}")
+
+    async def tg_periodic_reporter(self):
+        """Task to send status report every 2 hours."""
+        if not self.tg_bot:
+            return
+            
+        self.logger.info("🕒 Telegram periodic reporter started (Every 2 hours)")
+        
+        while not self.stop_flag:
+            try:
+                # Wait 2 hours, checking stop_flag every second
+                for _ in range(7200):
+                    if self.stop_flag: return
+                    await asyncio.sleep(1)
+                
+                if not self.stop_flag:
+                    self.logger.info("🕒 Sending scheduled 2-hour status report...")
+                    await self.sync_positions() # This also updates internal position vars
+                    await self.send_status_to_tg()
+            except Exception as e:
+                self.logger.error(f"Error in TG reporter loop: {e}")
+                await asyncio.sleep(60)
 
     async def run(self):
         self.setup_signal_handlers()
@@ -569,6 +737,12 @@ class HedgeBot:
         # Initial position sync
         await self.sync_positions()
         
+        # Start periodic reporter
+        self.tg_task = None
+        if self.tg_bot:
+            self.tg_task = asyncio.create_task(self.tg_periodic_reporter())
+
+            
         # Main Loop
         iterations = 0
         try:
@@ -578,6 +752,12 @@ class HedgeBot:
                     reconcile_success = await self.reconcile_positions()
                     if not reconcile_success:
                         self.logger.error("❌ Position reconciliation failed, stopping trading...")
+                        if self.tg_bot:
+                            await self.send_notification(
+                                f"❌ Fatal Error: {self.ticker}", 
+                                "Position reconciliation failed. Bot stopping.",
+                                emoji="🚨"
+                            )
                         break
                     iterations += 1
                     self.logger.info(f"--- Iteration {iterations}/{self.iterations} ---")
@@ -615,6 +795,12 @@ class HedgeBot:
                                 success = await self.execute_hedge_on_paradex(self.current_hedge_side, self.current_hedge_quantity)
                                 if not success or self.hedge_failed:
                                     self.logger.error("❌ Hedge failed, stopping trading...")
+                                    if self.tg_bot:
+                                        await self.send_notification(
+                                            f"❌ Hedge Failed: {self.ticker}",
+                                            "Paradex hedge failed to fill after retries. Manual intervention required!",
+                                            emoji="🚨"
+                                        )
                                     self.stop_flag = True
                                     break
                                 await self.sync_positions()  # Verify positions after hedge

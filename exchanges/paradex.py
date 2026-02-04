@@ -702,10 +702,24 @@ class ParadexClient(BaseExchangeClient):
                         f"Current position: {position_size} {self.config.contract_id} ({side})", 
                         "INFO"
                     )
-            
                 return position_size
 
-        return Decimal(0)
+    async def get_liquidation_price(self) -> Optional[Decimal]:
+        """Get liquidation price for current market on Paradex."""
+        try:
+            positions = await self._fetch_positions_with_retry()
+            for pos in positions:
+                if (isinstance(pos, dict) and 
+                    pos.get('market') == self.config.contract_id and 
+                    pos.get('status') == 'OPEN'):
+                    
+                    liq_price = pos.get('liquidation_price')
+                    if liq_price:
+                        return Decimal(liq_price)
+            return None
+        except Exception as e:
+            self.logger.log(f"Failed to get Paradex liquidation price: {e}", "ERROR")
+            return None
 
     @retry(
         stop=stop_after_attempt(5),
@@ -786,4 +800,10 @@ class ParadexClient(BaseExchangeClient):
             self.logger.log("Failed to get tick size", "ERROR")
             raise ValueError("Failed to get tick size")
 
-        return self.config.contract_id, self.config.tick_size
+        # Estimate min quantity based on increment and notional
+        min_qty_by_notional = (min_notional / last_price) if last_price > 0 else Decimal('0')
+        min_quantity = max(self.order_size_increment, min_qty_by_notional).quantize(self.order_size_increment, rounding=ROUND_HALF_UP)
+        if min_quantity < self.order_size_increment:
+             min_quantity = self.order_size_increment
+
+        return self.config.contract_id, self.config.tick_size, min_quantity

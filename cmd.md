@@ -16,3 +16,7 @@ python3 hedge_mode.py --exchange backpack_paradex --ticker MET --size 1500 --ite
 caffeinate -i -s python3 hedge_mode.py --exchange backpack_paradex --ticker PYTH --size 1800 --iter 2 --sleep 12600
 
 caffeinate -i -s python3 hedge_mode.py --exchange backpack_paradex --ticker DOT --size 300 --iter 1 --sleep 300
+
+caffeinate -i -s python3 hedge_mode.py --exchange backpack_paradex --ticker TAO --size 3 --iter 1 --sleep 26688
+
+caffeinate -i -s python3 hedge_mode.py --exchange backpack_paradex --ticker AVAX --size 72 --iter 2 --sleep 46800
