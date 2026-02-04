@@ -1,6 +1,11 @@
-##### 关注我 **X (Twitter)**: [@yourQuantGuy](https://x.com/yourQuantGuy)
-
+##### 原仓库地址：[https://github.com/yourQuantGuy/perp-dex-tools](https://github.com/yourQuantGuy/perp-dex-tools)
+原作者：[@yourQuantGuy](https://x.com/yourQuantGuy)
+better分支 dev：[@0xwenjian](https://x.com/0xwenjian)
 ---
+## 本仓库优化内容
+1. 新增sleep参数，用于控制脚本的运行间隔，增加持仓时常
+2. 修复kshib、kpepe等ticker的bug
+3. 完善backpack_paradex交易所直接的对冲模式 - 支持tg推送
 
 **English speakers**: Please read README_EN.md for the English version of this documentation.
 
@@ -321,6 +326,22 @@ python hedge_mode.py --exchange grvt --ticker BTC --size 0.05 --iter 20
 
 # 运行 BTC 对冲模式（edgeX）
 python hedge_mode.py --exchange edgex --ticker BTC --size 0.001 --iter 20
+```
+
+### Backpack-Paradex 对冲模式 (高级版)
+
+在 `better` 分支中，我们针对 Backpack-Paradex 对冲进行了重构，新增了多项功能：
+
+- **智能仓位对齐**：自动处理小额残余仓位（碎单）。如果差额太小无法在 Paradex 对冲，会自动在 Backpack 抹平。
+- **强制仓位监控**：每次交易前自动同步并校验双边仓位，确保 100% 对冲状态。
+- **实时 TG 播报**：每轮交易完成后立即推送详细盈亏明细，不再有延迟。
+- **爆仓防御系统**：实时计算距离爆仓价的百分比，当风险距离小于 10% 时触发 TG 红色警报。
+- **自动合约解析**：自动获取交易所的最小下单量、价格步长等限制，防止非法订单报错。
+
+#### 使用示例 (Backpack-Paradex)：
+```bash
+# AVAX 示例：每轮 72 个，跑 2 轮，每轮持仓约 13 小时
+python3 hedge_mode.py --exchange backpack_paradex --ticker AVAX --size 72 --iter 2 --sleep 46800
 ```
 
 ### 对冲模式参数
