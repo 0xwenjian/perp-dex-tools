@@ -196,3 +196,7 @@ cython_debug/
 
 # pyenv settings
 .python-version
+
+# User commands and specific logs
+cmd.md
+
