@@ -703,6 +703,8 @@ class ParadexClient(BaseExchangeClient):
                         "INFO"
                     )
                 return position_size
+        
+        return Decimal(0)
 
     async def get_liquidation_price(self) -> Optional[Decimal]:
         """Get liquidation price for current market on Paradex."""
