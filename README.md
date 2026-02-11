@@ -9,8 +9,8 @@ better分支 dev：[@0xwenjian](https://x.com/0xwenjian)
    所需依赖安装：
    ```bash
    python3 -m venv env
-   pip install -r hedge_bp_paradex_requirements.txt
    source env/bin/activate  # Windows: env\Scripts\activate
+   pip install -r hedge_bp_paradex_requirements.txt
    ```
 5. 修复lighter-bp对冲脚本若干bug
 6. 实现丰富tg提送  -- 每两个小时push一次仓位信息
