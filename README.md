@@ -3,52 +3,18 @@
 better分支 dev：[@0xwenjian](https://x.com/0xwenjian)
 ---
 ## better分支优化内容
-1. 新增sleep参数，用于控制脚本的运行间隔，增加持仓时常
+1. 新增sleep参数，用于控制脚本的运行间隔，增加持仓时长
 2. 修复kshib、kpepe等ticker的bug
-3. 完善backpack_paradex交易所直接的对冲模式 - 支持tg推送
-4. 修复lighter-bp对冲脚本若干bug
+3. 完善backpack_paradex交易所直接的对冲模式
+   所需依赖安装：
+   ```bash
+   python3 -m venv env
+   pip install -r hedge_bp_paradex_requirements.txt
+   source env/bin/activate  # Windows: env\Scripts\activate
+   ```
+5. 修复lighter-bp对冲脚本若干bug
+6. 实现丰富tg提送  -- 每两个小时push一次仓位信息
 
-**English speakers**: Please read README_EN.md for the English version of this documentation.
-
-## 📢 分享说明
-
-**欢迎分享本项目！** 如果您要分享或修改此代码，请务必包含对原始仓库的引用。我们鼓励开源社区的发展，但请保持对原作者工作的尊重和认可。
-
----
-
-## 自动交易机器人
-
-一个支持多个交易所（目前包括 EdgeX, Backpack, Paradex, Aster, Lighter, grvt, Extended）的模块化交易机器人。该机器人实现了自动下单并在盈利时自动平仓的策略，主要目的是取得高交易量。
-
-## 邀请链接 (获得返佣以及福利)
-
-#### EdgeX: [https://pro.edgex.exchange/referral/QUANT](https://pro.edgex.exchange/referral/QUANT)
-
-永久享受 VIP 1 费率；额外 10% 手续费返佣；10% 额外奖励积分
-
-#### Backpack: [https://backpack.exchange/join/quant](https://backpack.exchange/join/quant)
-
-使用我的推荐链接获得 35% 手续费返佣
-
-#### Paradex: [https://app.paradex.trade/r/quant](https://app.paradex.trade/r/quant)
-
-使用我的推荐链接获得 10% 手续费返佣以及潜在未来福利
-
-#### Aster: [https://www.asterdex.com/zh-CN/referral/5191B1](https://www.asterdex.com/zh-CN/referral/5191B1)
-
-使用我的推荐链接获得 30% 手续费返佣以及积分加成
-
-#### grvt: [https://grvt.io/exchange/sign-up?ref=QUANT](https://grvt.io/exchange/sign-up?ref=QUANT)
-
-获得 1.3x 全网最高的积分加成，未来的手续费返佣（官方预计 10 月中上线），以及即将开始的专属交易竞赛
-
-#### Extended: [https://app.extended.exchange/join/QUANT](https://app.extended.exchange/join/QUANT)
-
-10%的即时手续费减免；积分加成（官方未公布具体加成公式，但文档里有明确说明，通过官方大使邀请能拿到比自己小号邀请自己更多的分数）
-
-#### ApeX: [https://join.omni.apex.exchange/quant](https://join.omni.apex.exchange/quant)
-
-30%返佣; 5%手续费减免; 积分加成; 有资格参与 10 月 20 日至 11 月 2 日的社区专属交易竞赛，总奖金高达$5500
 
 ## 安装
 
